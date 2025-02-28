@@ -311,7 +311,10 @@ class InstallExtensionsCommand extends Command
             $this->info(($index + 1) . ". Command: $command");
             
             if ($this->confirm("Execute this command?", false)) {
-                $this->executeCommand($command);
+                $result = $this->executeCommand($command);
+                if (!$result['success']) {
+                    $this->error($result['message']);
+                }
             } else {
                 $this->warn("Command skipped.");
             }
@@ -354,7 +357,10 @@ class InstallExtensionsCommand extends Command
         
         foreach ($commands as $command) {
             $this->info("Executing: $command");
-            $this->executeCommand($command);
+            $result = $this->executeCommand($command);
+            if (!$result['success']) {
+                $this->error($result['message']);
+            }
         }
     }
 
@@ -362,28 +368,26 @@ class InstallExtensionsCommand extends Command
      * Execute a shell command.
      *
      * @param string $command
-     * @return void
+     * @return array
      */
     protected function executeCommand($command)
     {
-        $process = Process::fromShellCommandline($command);
-        $process->setTimeout(null);
-        
-        $this->info("Running: $command");
-        
-        $process->run(function ($type, $buffer) {
-            if (Process::ERR === $type) {
-                $this->error($buffer);
-            } else {
-                $this->line($buffer);
-            }
-        });
-        
-        if ($process->isSuccessful()) {
-            $this->info("Command completed successfully.");
-        } else {
-            $this->error("Command failed with exit code: " . $process->getExitCode());
+        if (function_exists('posix_geteuid') && posix_geteuid() !== 0) {
+            return [
+                'success' => false,
+                'message' => 'This command requires root privileges. Please run with sudo.',
+            ];
         }
+
+        $process = Process::fromShellCommandline($command);
+        $process->run();
+
+        return [
+            'success' => $process->isSuccessful(),
+            'exit_code' => $process->getExitCode(),
+            'output' => $process->getOutput(),
+            'error' => $process->getErrorOutput(),
+        ];
     }
 
     /**

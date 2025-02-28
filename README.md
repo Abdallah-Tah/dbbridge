@@ -32,6 +32,12 @@ After installation, publish the configuration file:
 php artisan vendor:publish --provider="DBBridge\DBBridgeServiceProvider" --tag="config"
 ```
 
+**Important:** Installation commands require root privileges. Run them with `sudo`:
+
+```bash
+sudo php artisan dbbridge:install-extensions --extension=oci8
+```
+
 ## Usage
 
 ### Check Your Environment

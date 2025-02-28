@@ -6,8 +6,7 @@ echo
 
 # Check if running as root
 if [ "$EUID" -ne 0 ]; then
-  echo "This script requires root privileges."
-  echo "Please run with sudo or as root."
+  echo "This script requires root privileges. Please run with sudo."
   exit 1
 fi
 
