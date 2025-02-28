@@ -231,11 +231,26 @@ class InstallExtensionsCommand extends Command
             return;
         }
 
+        $success = false;
         if ($method === 'guided') {
-            $this->guidedInstallation($extension, $config, $osKey);
+            $success = $this->guidedInstallation($extension, $config, $osKey);
         } else {
-            $this->automaticInstallation($extension, $config, $osKey);
+            $success = $this->automaticInstallation($extension, $config, $osKey);
         }
+
+        // Verify installation
+        $this->newLine();
+        $isInstalled = $this->verifyInstallation($extension);
+
+        if (!$isInstalled) {
+            $this->warn("The $extension extension installation may not be complete.");
+            if ($this->confirm("Would you like to attempt cleanup?", false)) {
+                $this->cleanupOnFailure($extension);
+            }
+        }
+
+        // Ensure environment variables persist across sessions
+        $this->ensureEnvironmentPersistence($extension);
     }
 
     /**
@@ -277,7 +292,7 @@ class InstallExtensionsCommand extends Command
      * @param string $extension
      * @param array $config
      * @param string $osKey
-     * @return void
+     * @return bool
      */
     protected function guidedInstallation($extension, $config, $osKey)
     {
@@ -297,14 +312,14 @@ class InstallExtensionsCommand extends Command
             } else {
                 $this->error("No specific installation steps for your Linux distribution.");
                 $this->showManualInstructions($extension, $config);
-                return;
+                return false;
             }
         } elseif (isset($config[$osKey]['commands'])) {
             $commands = $config[$osKey]['commands'];
         } else {
             $this->error("No automated installation commands available for your OS.");
             $this->showManualInstructions($extension, $config);
-            return;
+            return false;
         }
 
         foreach ($commands as $index => $command) {
@@ -319,6 +334,8 @@ class InstallExtensionsCommand extends Command
                 $this->warn("Command skipped.");
             }
         }
+
+        return true;
     }
 
     /**
@@ -327,7 +344,7 @@ class InstallExtensionsCommand extends Command
      * @param string $extension
      * @param array $config
      * @param string $osKey
-     * @return void
+     * @return bool
      */
     protected function automaticInstallation($extension, $config, $osKey)
     {
@@ -346,13 +363,13 @@ class InstallExtensionsCommand extends Command
                 $commands = $config[$osKey]['rhel_based']['commands'];
             } else {
                 $this->error("No specific installation steps for your Linux distribution.");
-                return;
+                return false;
             }
         } elseif (isset($config[$osKey]['commands'])) {
             $commands = $config[$osKey]['commands'];
         } else {
             $this->error("No automated installation commands available for your OS.");
-            return;
+            return false;
         }
 
         foreach ($commands as $command) {
@@ -362,6 +379,8 @@ class InstallExtensionsCommand extends Command
                 $this->error($result['message'] ?? $result['error'] ?? 'Command execution failed.');
             }
         }
+
+        return true;
     }
 
     /**
@@ -379,16 +398,106 @@ class InstallExtensionsCommand extends Command
             ];
         }
 
-        $process = Process::fromShellCommandline($command);
-        $process->run();
+        // Make commands non-interactive where possible
+        $command = $this->makeCommandNonInteractive($command);
 
-        return [
+        $process = Process::fromShellCommandline($command);
+        $process->setTimeout(300); // Add timeout for long-running commands
+        $process->run(function ($type, $buffer) {
+            // Output real-time feedback
+            if (Process::ERR === $type) {
+                $this->error(trim($buffer));
+            } else {
+                $this->info(trim($buffer));
+            }
+        });
+
+        $result = [
             'success' => $process->isSuccessful(),
             'exit_code' => $process->getExitCode(),
             'output' => $process->getOutput(),
             'error' => $process->getErrorOutput(),
             'message' => $process->getErrorOutput() ?: 'Command execution failed.',
         ];
+
+        // Add critical command validation
+        if (!$result['success'] && $this->isCriticalCommand($command)) {
+            $this->error("Critical command failed. Installation may be incomplete.");
+            $this->offerTroubleshooting($command, $result['error']);
+        }
+
+        return $result;
+    }
+
+    /**
+     * Make a command non-interactive.
+     *
+     * @param string $command
+     * @return string
+     */
+    protected function makeCommandNonInteractive($command)
+    {
+        // Handle specific commands that need non-interactive options
+        if (strpos($command, 'unzip') !== false && strpos($command, '-o') === false) {
+            return str_replace('unzip', 'unzip -o', $command); // -o for overwrite without prompting
+        }
+
+        if (strpos($command, 'pecl install') !== false) {
+            // For pecl, we need to handle the Oracle home directory prompt
+            return "echo '\n' | " . $command; // Send newline to accept default
+        }
+
+        return $command;
+    }
+
+    /**
+     * Check if a command is critical for the installation.
+     *
+     * @param string $command
+     * @return bool
+     */
+    protected function isCriticalCommand($command)
+    {
+        $criticalPatterns = [
+            'apt-get install',
+            'pecl install',
+            'mkdir -p /opt/oracle',
+            'ldconfig'
+        ];
+
+        foreach ($criticalPatterns as $pattern) {
+            if (strpos($command, $pattern) !== false) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Offer troubleshooting tips based on the command and error.
+     *
+     * @param string $command
+     * @param string $error
+     * @return void
+     */
+    protected function offerTroubleshooting($command, $error)
+    {
+        // Offer specific troubleshooting based on command and error
+        if (strpos($command, 'pecl install oci8') !== false) {
+            $this->info("Troubleshooting pecl install:");
+            $this->info("1. Make sure PECL is installed: sudo apt-get install php-pear php-dev");
+            $this->info("2. Check Oracle Instant Client path: ls -la /opt/oracle/");
+            $this->info("3. Verify LD_LIBRARY_PATH: echo \$LD_LIBRARY_PATH");
+        } elseif (strpos($command, 'unzip') !== false) {
+            $this->info("Troubleshooting unzip:");
+            $this->info("1. Check if the zip file exists: ls -la /opt/oracle/");
+            $this->info("2. Install unzip if missing: sudo apt-get install unzip");
+        } elseif (strpos($command, 'wget') !== false) {
+            $this->info("Troubleshooting download:");
+            $this->info("1. Check internet connectivity");
+            $this->info("2. Verify the URL is accessible");
+            $this->info("3. Try downloading manually and uploading to the server");
+        }
     }
 
     /**
@@ -419,5 +528,140 @@ class InstallExtensionsCommand extends Command
             strpos($this->osDetails, 'Fedora') !== false ||
             file_exists('/etc/redhat-release')
         );
+    }
+
+    protected function cleanupOnFailure($extension)
+    {
+        if ($this->confirm("Would you like to clean up failed installation files?", true)) {
+            $this->info("Cleaning up...");
+
+            if ($extension === 'oci8') {
+                // Remove Oracle Instant Client files if they exist
+                $this->executeCommand("rm -f /opt/oracle/instantclient-basiclite-linuxx64.zip");
+
+                // Remove configuration if it exists
+                $this->executeCommand("rm -f /etc/php/*/mods-available/oci8.ini");
+            }
+
+            $this->info("Cleanup completed.");
+        }
+    }
+
+    /**
+     * Verify if an extension is successfully installed.
+     *
+     * @param string $extension
+     * @return bool
+     */
+    protected function verifyInstallation($extension)
+    {
+        $this->info("Verifying $extension installation...");
+
+        $process = Process::fromShellCommandline("php -m | grep -i $extension");
+        $process->run();
+
+        if ($process->isSuccessful()) {
+            $this->info("✓ $extension extension is successfully installed and loaded.");
+            return true;
+        } else {
+            $this->error("✗ $extension extension is not loaded.");
+            $this->showExtensionTroubleshooting($extension);
+            return false;
+        }
+    }
+
+    /**
+     * Show troubleshooting steps for a specific extension.
+     *
+     * @param string $extension
+     * @return void
+     */
+    protected function showExtensionTroubleshooting($extension)
+    {
+        $this->info("Troubleshooting steps for $extension:");
+
+        if ($extension === 'oci8') {
+            $this->info("1. Check if the extension file exists:");
+            $this->info("   ls -la /usr/lib/php/*/oci8.so");
+
+            $this->info("2. Verify Oracle client installation:");
+            $this->info("   ls -la /opt/oracle/instantclient_*");
+
+            $this->info("3. Check PHP configuration:");
+            $this->info("   php --ini");
+
+            $this->info("4. Ensure LD_LIBRARY_PATH is set:");
+            $this->info("   echo \$LD_LIBRARY_PATH");
+
+            $this->info("5. Check for any errors in PHP logs:");
+            $this->info("   tail -n 50 /var/log/php*");
+
+            $this->info("6. Make sure the extension is enabled:");
+            $this->info("   sudo phpenmod oci8");
+            $this->info("   sudo service apache2 restart");
+        } elseif ($extension === 'sqlsrv') {
+            $this->info("1. Check if the extension files exist:");
+            $this->info("   ls -la /usr/lib/php/*/sqlsrv.so");
+            $this->info("   ls -la /usr/lib/php/*/pdo_sqlsrv.so");
+
+            $this->info("2. Verify ODBC driver installation:");
+            $this->info("   odbcinst -q -d");
+
+            $this->info("3. Check PHP configuration:");
+            $this->info("   php --ini");
+
+            $this->info("4. Make sure the extensions are enabled:");
+            $this->info("   sudo phpenmod sqlsrv pdo_sqlsrv");
+            $this->info("   sudo service apache2 restart");
+        }
+    }
+
+    /**
+     * Ensure environment variables persist across sessions.
+     *
+     * @param string $extension
+     * @return void
+     */
+    protected function ensureEnvironmentPersistence($extension)
+    {
+        if ($extension === 'oci8') {
+            $this->info("Setting up environment persistence for Oracle...");
+
+            // Add to system-wide profile
+            $ldLibraryPathLine = 'export LD_LIBRARY_PATH=/opt/oracle/instantclient_*:$LD_LIBRARY_PATH';
+
+            $files = [
+                '/etc/profile.d/oracle.sh',
+                '/etc/environment'
+            ];
+
+            foreach ($files as $file) {
+                $this->info("Adding Oracle environment variables to $file");
+
+                // Create the file if it doesn't exist
+                if (!file_exists(dirname($file))) {
+                    $this->executeCommand("sudo mkdir -p " . dirname($file));
+                }
+
+                // Check if the line already exists
+                $checkCommand = "grep -q \"$ldLibraryPathLine\" $file 2>/dev/null || echo 'not found'";
+                $process = Process::fromShellCommandline($checkCommand);
+                $process->run();
+
+                if (trim($process->getOutput()) === 'not found' || !file_exists($file)) {
+                    // Add to file
+                    $command = "echo \"$ldLibraryPathLine\" | sudo tee -a $file";
+                    $this->executeCommand($command);
+
+                    // Make executable if it's a shell script
+                    if (strpos($file, '.sh') !== false) {
+                        $this->executeCommand("sudo chmod +x $file");
+                    }
+                }
+            }
+
+            $this->info("Environment variables have been configured to persist across sessions.");
+            $this->info("You may need to log out and log back in for these changes to take effect.");
+        }
     }
 }
