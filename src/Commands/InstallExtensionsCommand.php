@@ -61,7 +61,7 @@ class InstallExtensionsCommand extends Command
 
         // Get extensions to install
         $extensions = $this->getExtensionsToInstall();
-        
+
         if (empty($extensions)) {
             $this->error('No extensions selected for installation.');
             return 1;
@@ -115,23 +115,23 @@ class InstallExtensionsCommand extends Command
         if (file_exists('/etc/os-release')) {
             $osRelease = file_get_contents('/etc/os-release');
             preg_match('/PRETTY_NAME="([^"]+)"/', $osRelease, $matches);
-            
+
             if (isset($matches[1])) {
                 return $matches[1];
             }
         }
-        
+
         // Try lsb_release command
         $process = Process::fromShellCommandline('lsb_release -ds');
         $process->run();
-        
+
         if ($process->isSuccessful()) {
             return trim($process->getOutput());
         }
-        
+
         return 'Unknown Linux Distribution';
     }
-    
+
     /**
      * Get the macOS version.
      *
@@ -141,12 +141,12 @@ class InstallExtensionsCommand extends Command
     {
         $process = Process::fromShellCommandline('sw_vers -productVersion');
         $process->run();
-        
+
         if ($process->isSuccessful()) {
             $version = trim($process->getOutput());
             return "macOS $version";
         }
-        
+
         return 'Unknown macOS Version';
     }
 
@@ -179,7 +179,7 @@ class InstallExtensionsCommand extends Command
 
         $this->newLine();
         $selected = $this->ask('Which extensions would you like to install? (comma-separated numbers, e.g. 1,3)');
-        
+
         if (empty($selected)) {
             return [];
         }
@@ -208,7 +208,7 @@ class InstallExtensionsCommand extends Command
         $this->info("Installing $extension extension...");
 
         $config = config("dbbridge.extensions.$extension");
-        
+
         if (!$config) {
             $this->error("Configuration for $extension not found.");
             return;
@@ -248,7 +248,7 @@ class InstallExtensionsCommand extends Command
     protected function showManualInstructions($extension, $config)
     {
         $this->info("Manual installation instructions for $extension:");
-        
+
         $osKey = strtolower($this->os);
         if ($this->os === 'Darwin') {
             $osKey = 'macos';
@@ -260,7 +260,7 @@ class InstallExtensionsCommand extends Command
             }
         } else {
             $this->info("No specific instructions available for your OS. Please refer to the official documentation:");
-            
+
             if ($extension === 'sqlsrv') {
                 $this->info("SQL Server: https://docs.microsoft.com/en-us/sql/connect/php/microsoft-php-driver-for-sql-server");
             } elseif ($extension === 'oci8') {
@@ -282,12 +282,12 @@ class InstallExtensionsCommand extends Command
     protected function guidedInstallation($extension, $config, $osKey)
     {
         $this->info("Guided installation for $extension on $this->os:");
-        
+
         if ($osKey === 'linux') {
             // Determine Linux distribution type
             $isDebianBased = $this->isDebianBased();
             $isRHELBased = $this->isRHELBased();
-            
+
             if ($isDebianBased && isset($config[$osKey]['debian_based'])) {
                 $this->info("Using Debian-based installation steps.");
                 $commands = $config[$osKey]['debian_based']['commands'];
@@ -306,14 +306,14 @@ class InstallExtensionsCommand extends Command
             $this->showManualInstructions($extension, $config);
             return;
         }
-        
+
         foreach ($commands as $index => $command) {
             $this->info(($index + 1) . ". Command: $command");
-            
+
             if ($this->confirm("Execute this command?", false)) {
                 $result = $this->executeCommand($command);
                 if (!$result['success']) {
-                    $this->error($result['message']);
+                    $this->error($result['message'] ?? $result['error'] ?? 'Command execution failed.');
                 }
             } else {
                 $this->warn("Command skipped.");
@@ -332,12 +332,12 @@ class InstallExtensionsCommand extends Command
     protected function automaticInstallation($extension, $config, $osKey)
     {
         $this->info("Automatic installation for $extension on $this->os:");
-        
+
         if ($osKey === 'linux') {
             // Determine Linux distribution type
             $isDebianBased = $this->isDebianBased();
             $isRHELBased = $this->isRHELBased();
-            
+
             if ($isDebianBased && isset($config[$osKey]['debian_based'])) {
                 $this->info("Using Debian-based installation steps.");
                 $commands = $config[$osKey]['debian_based']['commands'];
@@ -354,12 +354,12 @@ class InstallExtensionsCommand extends Command
             $this->error("No automated installation commands available for your OS.");
             return;
         }
-        
+
         foreach ($commands as $command) {
             $this->info("Executing: $command");
             $result = $this->executeCommand($command);
             if (!$result['success']) {
-                $this->error($result['message']);
+                $this->error($result['message'] ?? $result['error'] ?? 'Command execution failed.');
             }
         }
     }
@@ -387,6 +387,7 @@ class InstallExtensionsCommand extends Command
             'exit_code' => $process->getExitCode(),
             'output' => $process->getOutput(),
             'error' => $process->getErrorOutput(),
+            'message' => $process->getErrorOutput() ?: 'Command execution failed.',
         ];
     }
 
@@ -419,4 +420,4 @@ class InstallExtensionsCommand extends Command
             file_exists('/etc/redhat-release')
         );
     }
-} 
+}
